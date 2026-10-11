@@ -1,0 +1,10 @@
+{
+  "name": "Psicotestes — boletins e notas",
+  "short_name": "Psicotestes",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#f2f5f3",
+  "theme_color": "#12302e",
+  "lang": "pt-BR",
+  "icons": [{ "src": "/icone.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }]
+}
