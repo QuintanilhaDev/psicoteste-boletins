@@ -46,7 +46,7 @@ const RE_IGNORAR = /\b(nasc\w*|admissao|validade|vencimento|rg|identidade|telefo
 const RE_COMPANHIA = /\b(ltda|eireli|sa|s a|seguranca|vigilancia|servicos|patrimonial|transportes?|empresa|grupo|comercio|industria|epp|associacao|condominio|cia|escolta|protecao|monitoramento|terceirizacao|empreendimentos|participacoes|solucoes|limitada)\b/;
 const RE_RODAPE = /^(obs|observ|total|subtotal|soma|assinatura|responsavel|psicolog|crp|pagina|relacao|lista|data|quantidade|qtd|salvador|emitido|gerado|atenciosamente|legenda|fonte)/;
 const RE_TITULO_GENERICO = /\b(relacao|lista|listagem|psicotest\w*|psicotecnic\w*|avaliac\w+|boletim|planilha|relatorio|controle|clinica|exames?|laudos?|encaminhamento)\b/;
-const RE_ABA_GENERICA = /^(planilha|sheet|plan|folha|pagina|aba|tabela|dados|geral|lista|relacao|psicotestes?|vigilantes|resumo|total|base|controle|relatorio|export\w*|worksheet|report|cadastro|principal|aptos|inaptos|pendentes|realizados|agendados|faltosos|faltas)\s*\d*$/;
+const RE_ABA_GENERICA = /^(planilha|sheet|plan|folha|pagina|aba|tabela|dados|geral|lista|relacao|psicotestes?|vigilantes|resumo|total|base|controle|relatorio|export\w*|worksheet|report|cadastro|principal|nomes|pessoas|funcionarios|candidatos|colaboradores|avaliados|todos|listagem|aptos|inaptos|pendentes|realizados|agendados|faltosos|faltas)\s*\d*$/;
 const STOP_ARQUIVO = new Set([
   'psicoteste', 'psicotestes', 'psicotecnico', 'psicotecnicos', 'planilha', 'planilhas', 'relacao', 'lista',
   'listagem', 'vigilantes', 'vigilante', 'de', 'do', 'da', 'dos', 'das', 'exames', 'exame', 'avaliacao',
@@ -89,6 +89,12 @@ function cpfDe(c: Cell): { cpf: string; valido: boolean } | null {
     const d = digits(m[0]);
     return { cpf: d, valido: isCPF(d) };
   }
+  // "CPF: 52998224725" ou "cpf 529.982.247-25" dentro de um texto
+  const rot = s.match(/\bc\.?p\.?f\.?\b\D{0,6}(\d{3}[.\s]?\d{3}[.\s]?\d{3}[-.\s]?\d{2}|\d{8,11})(?!\d)/i);
+  if (rot) {
+    const d = digits(rot[1]).padStart(11, '0');
+    return { cpf: d, valido: isCPF(d) };
+  }
   if (/^[\d.\-\s/]+$/.test(s)) {
     const d = digits(s);
     if (d.length === 11) return { cpf: d, valido: isCPF(d) };
@@ -123,8 +129,10 @@ function pareceNomePessoa(c: Cell): boolean {
 }
 
 function limparNome(s: string): string {
+  const semCpf = s.replace(/\bc\.?p\.?f\.?\b\D{0,6}[\d.\-\s]{8,16}/gi, ' ');
+  if (!/[a-zA-ZÀ-ú]{2}/.test(semCpf.replace(/\bcpf\b/gi, ''))) return '';
   return nomeBonito(
-    s.replace(RE_CPF_MASCARA, ' ').replace(/\bcpf\b\s*[:.]?/gi, ' ').replace(/^[\s\-–—:;,.\d)]+|[\s\-–—:;,.(]+$/g, ''),
+    semCpf.replace(RE_CPF_MASCARA, ' ').replace(/\bcpf\b\s*[:.]?/gi, ' ').replace(/^[\s\-–—:;,.\d)]+|[\s\-–—:;,.(]+$/g, ''),
   );
 }
 
@@ -310,6 +318,10 @@ function mapearColunas(linhas: Cell[][]): Colunas {
   if (nome < 0) {
     nome = usar(melhorDe(livres(), (j) => (est[j].n >= 1 ? fr(j, 'pessoa') + est[j].distintos.size / 1e4 : 0), 0.5));
   }
+  // coluna única com nome e "CPF: ..." alternados (layout empilhado)
+  if (nome < 0 && cpf < 0) {
+    nome = usar(melhorDe(livres(), (j) => (fr(j, 'pessoa') >= 0.3 && fr(j, 'pessoa') + fr(j, 'cpf') >= 0.8 ? fr(j, 'pessoa') : 0), 0));
+  }
   if (empresa < 0) {
     empresa = usar(melhorDe(livres(), (j) => (est[j].n >= 1 ? fr(j, 'empresa') : 0), 0.5));
   }
@@ -383,8 +395,8 @@ function lerAba(aba: Aba, arquivo: string, multiplasAbas: boolean, op: OpcoesLei
     let cp = col.cpf >= 0 ? cpfDe(l[col.cpf] ?? null) : null;
     if (!cp && col.cpf < 0) {
       for (const x of cheias) {
-        const m = typeof x.c === 'string' ? x.c.match(RE_CPF_MASCARA) : null;
-        if (m) { cp = cpfDe(m[0]); break; }
+        const c2 = typeof x.c === 'string' && (RE_CPF_MASCARA.test(x.c) || /\bc\.?p\.?f/i.test(x.c)) ? cpfDe(x.c) : null;
+        if (c2) { cp = c2; break; }
       }
     }
     const cpfBruto = col.cpf >= 0 ? texto(l[col.cpf] ?? null) : '';
@@ -456,6 +468,13 @@ function lerAba(aba: Aba, arquivo: string, multiplasAbas: boolean, op: OpcoesLei
       continue; // texto solto sem CPF numa planilha que tem coluna de CPF: não é uma pessoa
     }
 
+    // layout empilhado: nome numa linha e "CPF: ..." na linha de baixo → completa a pessoa de cima
+    const anterior = out.registros[out.registros.length - 1];
+    if (cp && !nome && anterior && anterior.aba === aba.nome && !anterior.cpf && i + 1 - anterior.linha <= 2) {
+      anterior.cpf = cp.cpf;
+      anterior.cpfValido = cp.valido;
+      continue;
+    }
     const data = col.data >= 0 ? parseDate(l[col.data] ?? null) : null;
     out.registros.push({
       empresa: empresa ?? '',

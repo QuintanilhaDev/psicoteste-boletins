@@ -99,17 +99,23 @@ function abaDoWorksheet(nome: string, ws: XLSX.WorkSheet): Aba {
     }
     linhas.push(l);
   }
-  // células mescladas: repete o valor em toda a área (empresa mesclada na vertical, por exemplo)
+  // células mescladas: repete o valor na vertical (ex.: empresa mesclada sobre várias pessoas)
+  const preenchidas = new Set<string>();
   for (const m of ws['!merges'] ?? []) {
     const r0 = m.s.r - r.s.r;
     const c0 = m.s.c - r.s.c;
     const v = linhas[r0]?.[c0];
     if (v == null) continue;
-    for (let R = r0; R <= m.e.r - r.s.r && R < linhas.length; R++) {
-      // mescla horizontal é só visual (títulos); a vertical carrega significado
-      if (R === r0) continue;
-      if (linhas[R] && c0 < linhas[R].length) linhas[R][c0] = v;
+    for (let R = r0 + 1; R <= m.e.r - r.s.r && R < linhas.length; R++) {
+      if (linhas[R] && c0 < linhas[R].length) { linhas[R][c0] = v; preenchidas.add(`${R}|${c0}`); }
     }
+  }
+  // linha que só existe por causa da mesclagem (a "segunda linha" de uma pessoa) não é outra pessoa
+  if (preenchidas.size) {
+    linhas.forEach((l, R) => {
+      const cheias = l.map((c, C) => ({ c, C })).filter((x) => x.c != null && x.c !== '');
+      if (cheias.length && cheias.every((x) => preenchidas.has(`${R}|${x.C}`))) linhas[R] = l.map(() => null);
+    });
   }
   // remove linhas ocultas por filtro? Não: uma linha oculta ainda é um atendimento realizado.
   return { nome, linhas };

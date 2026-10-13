@@ -42,6 +42,8 @@ export interface Boletim {
 export interface Importacao {
   id: string; arquivo: string; hash: string; em: string;
   linhas: number; novos: number; repetidos: number; avisos: string[]; boletimIds: string[];
+  /** linhas da mesma pessoa repetidas dentro da própria planilha (contadas uma vez só) */
+  repetidosNoArquivo?: number;
   repetida?: boolean;
 }
 export interface Config {
@@ -114,8 +116,25 @@ export function normalizarEstado(raw: unknown): Estado {
       fiscal: { ...base.config.fiscal, ...(cfg.fiscal ?? {}) },
     },
   };
+  // boletins gerados antes da correção de repetidos: limpa os que ainda não viraram nota
+  for (const b of est.boletins) {
+    if (!b.pessoas.length) continue;
+    const unicos = deduplicar(b.pessoas);
+    if (unicos.length === b.pessoas.length) continue;
+    const tirados = b.pessoas.length - unicos.length;
+    if (b.nota.status === 'emitida' || b.nota.status === 'emitindo' || b.nota.protocolo) {
+      const aviso = `Atenção: este boletim listava ${tirados} vigilante(s) em dobro e a nota já foi emitida com ${b.quantidade}. O correto seria ${unicos.length}; confira e, se preciso, substitua a nota no portal da prefeitura.`;
+      if (!b.observacoes.includes(aviso)) b.observacoes.push(aviso);
+      continue;
+    }
+    b.pessoas = unicos;
+    b.quantidade = unicos.length;
+    b.baixado = { ...b.baixado, boletim: false }; // baixa de novo o PDF já corrigido
+    b.observacoes.push(`${tirados} nome(s) repetido(s) removido(s) na correção automática.`);
+  }
   // uma emissão interrompida (aba fechada no meio) volta para a fila; o nº do RPS já reservado evita nota em dobro
   for (const b of est.boletins) if (b.nota.status === 'emitindo') b.nota.status = 'pendente';
+  recalcular(est);
   const maior = est.boletins.reduce((m, b) => Math.max(m, b.numero || 0), 0);
   if (est.seqBoletim <= maior) est.seqBoletim = maior + 1;
   return est;
@@ -161,8 +180,57 @@ function resolverCliente(e: Estado, nome: string, cnpj?: string): Cliente {
   return novo;
 }
 
-const chavePessoa = (clienteId: string, p: { cpf: string; nome: string; data: string | null }, comp: string) =>
-  `${clienteId}|${p.cpf && p.cpf.length >= 5 ? p.cpf : 'n:' + norm(p.nome)}|${p.data ?? comp}`;
+/**
+ * Quem é a mesma pessoa, dentro de um cliente e de um mês:
+ * - mesmo CPF → mesma pessoa (mesmo com datas diferentes no mês);
+ * - sem CPF numa das linhas → mesma pessoa se o nome (sem acento/maiúsculas) for igual;
+ * - nomes iguais com CPFs diferentes → pessoas diferentes (homônimos).
+ */
+export class IndicePessoas {
+  private porCpf = new Map<string, Pessoa>();
+  private porNome = new Map<string, Pessoa[]>();
+  private static nome(p: Pessoa) { const n = norm(p.nome); return n && !n.startsWith('sem nome') ? n : ''; }
+  private static temCpf(p: Pessoa) { return digits(p.cpf).length === 11; }
+  achar(escopo: string, p: Pessoa): Pessoa | undefined {
+    if (IndicePessoas.temCpf(p)) {
+      const x = this.porCpf.get(`${escopo}|${p.cpf}`);
+      if (x) return x;
+    }
+    const n = IndicePessoas.nome(p);
+    if (!n) return undefined;
+    const mesmos = this.porNome.get(`${escopo}|${n}`) ?? [];
+    return IndicePessoas.temCpf(p) ? mesmos.find((m) => !IndicePessoas.temCpf(m)) : mesmos[0];
+  }
+  guardar(escopo: string, p: Pessoa) {
+    if (IndicePessoas.temCpf(p)) this.porCpf.set(`${escopo}|${p.cpf}`, p);
+    const n = IndicePessoas.nome(p);
+    if (n) { const k = `${escopo}|${n}`; this.porNome.set(k, [...(this.porNome.get(k) ?? []), p]); }
+  }
+  /** a linha nova traz o CPF que faltava na anterior: completa a pessoa já registrada */
+  completar(escopo: string, existente: Pessoa, nova: Pessoa) {
+    if (!IndicePessoas.temCpf(existente) && IndicePessoas.temCpf(nova)) {
+      existente.cpf = nova.cpf;
+      existente.cpfValido = nova.cpfValido;
+      this.porCpf.set(`${escopo}|${nova.cpf}`, existente);
+    }
+    if ((!existente.nome || existente.nome.startsWith('(sem nome')) && nova.nome && !nova.nome.startsWith('(sem nome')) existente.nome = nova.nome;
+    if (!existente.data && nova.data) existente.data = nova.data;
+  }
+}
+const escopoDe = (clienteId: string, comp: string) => `${clienteId}|${comp}`;
+
+/** remove repetidos de uma lista já montada (usado para corrigir boletins antigos) */
+export function deduplicar(pessoas: Pessoa[]): Pessoa[] {
+  const ind = new IndicePessoas();
+  const out: Pessoa[] = [];
+  for (const p0 of pessoas) {
+    const p = { ...p0 };
+    const ja = ind.achar('x', p);
+    if (ja) ind.completar('x', ja, p);
+    else { ind.guardar('x', p); out.push(p); }
+  }
+  return out;
+}
 
 function novoBoletim(e: Estado, c: Cliente, comp: string, imp: Importacao, agora: Date): Boletim {
   const b: Boletim = {
@@ -197,8 +265,9 @@ export function importarLeitura(e: Estado, arquivo: string, hash: string, leitur
     imp.avisos.push(`A planilha não informa o mês; usei ${competenciaLabel(mesAtual, true)}.`);
   }
 
-  const jaFaturadas = new Set<string>();
-  for (const b of e.boletins) for (const p of b.pessoas) jaFaturadas.add(chavePessoa(b.clienteId, p, b.competencia));
+  const jaFaturadas = new IndicePessoas();
+  for (const b of e.boletins) for (const p of b.pessoas) jaFaturadas.guardar(escopoDe(b.clienteId, b.competencia), p);
+  const desteArquivo = new Set<Pessoa>();
 
   // quem já foi cobrado, por cliente+CPF, para desconfiar de planilha sem data reenviada em outro mês
   const cobrados = new Map<string, { numero: number; competencia: string; recente: boolean }>();
@@ -241,9 +310,16 @@ export function importarLeitura(e: Estado, arquivo: string, hash: string, leitur
     if (r.data && !data) datasIgnoradas++;
     const comp = data ? data.slice(0, 7) : compPadrao;
     const pessoa: Pessoa = { nome: r.nome, cpf: r.cpf, cpfValido: r.cpfValido, data };
-    const chave = chavePessoa(c.id, pessoa, comp);
-    if (jaFaturadas.has(chave)) { imp.repetidos++; continue; }
-    jaFaturadas.add(chave);
+    const esc = escopoDe(c.id, comp);
+    const ja = jaFaturadas.achar(esc, pessoa);
+    if (ja) {
+      // repetida na própria planilha: só completa os dados; já cobrada antes: não cobra de novo
+      if (desteArquivo.has(ja)) { jaFaturadas.completar(esc, ja, pessoa); imp.repetidosNoArquivo = (imp.repetidosNoArquivo ?? 0) + 1; }
+      else imp.repetidos++;
+      continue;
+    }
+    jaFaturadas.guardar(esc, pessoa);
+    desteArquivo.add(pessoa);
     const bol = pegarBoletim(c, comp);
     bol.pessoas.push(pessoa);
     imp.novos++;
@@ -277,6 +353,7 @@ export function importarLeitura(e: Estado, arquivo: string, hash: string, leitur
     if (invalidos) b.observacoes.push(`${invalidos} CPF(s) ausente(s) ou com dígito inválido na planilha — contados normalmente.`);
   }
   if (datasIgnoradas) imp.avisos.push(`${datasIgnoradas} data(s) fora do período esperado foram desconsideradas; usei ${competenciaLabel(compPadrao, true)}.`);
+  if (imp.repetidosNoArquivo) imp.avisos.push(`${imp.repetidosNoArquivo} linha(s) repetiam um vigilante já listado na mesma planilha; cada pessoa foi contada uma vez só.`);
   if (imp.repetidos) imp.avisos.push(`${imp.repetidos} vigilante(s) já estavam em boletins anteriores e não foram cobrados de novo.`);
   recalcular(e);
   e.importacoes.unshift(imp);
@@ -348,15 +425,16 @@ export function juntarClientes(e: Estado, origemId: string, destinoId: string) {
   if (!d.telefone) d.telefone = o.telefone;
   if (!enderecoCompleto(d.endereco) && enderecoCompleto(o.endereco)) d.endereco = o.endereco;
   // quem já está num boletim do cliente de destino não é cobrado de novo
-  const ja = new Set<string>();
-  for (const b of e.boletins) if (b.clienteId === destinoId) for (const p of b.pessoas) ja.add(chavePessoa(destinoId, p, b.competencia));
+  const ja = new IndicePessoas();
+  for (const b of e.boletins) if (b.clienteId === destinoId) for (const p of b.pessoas) ja.guardar(escopoDe(destinoId, b.competencia), p);
   const vazios = new Set<string>();
   for (const b of e.boletins) {
     if (b.clienteId !== origemId) continue;
     b.clienteId = destinoId;
     if (b.nota.status === 'emitida' || b.nota.status === 'emitindo' || b.nota.protocolo || !b.pessoas.length) continue;
     const antes = b.pessoas.length;
-    b.pessoas = b.pessoas.filter((p) => { const k = chavePessoa(destinoId, p, b.competencia); if (ja.has(k)) return false; ja.add(k); return true; });
+    const esc = escopoDe(destinoId, b.competencia);
+    b.pessoas = b.pessoas.filter((p) => { if (ja.achar(esc, p)) return false; ja.guardar(esc, p); return true; });
     if (b.pessoas.length !== antes) {
       b.quantidade = b.pessoas.length;
       b.observacoes.push(`${antes - b.pessoas.length} vigilante(s) já constavam em outro boletim deste cliente e foram retirados.`);

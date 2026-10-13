@@ -27,7 +27,7 @@ describe('regras de negócio', () => {
     const g = gente(3);
     const linhas = [cab, ...g.map((p) => [p.nome, p.cpf, 'Alfa Segurança Ltda']), [g[0].nome, g[0].cpf, 'Alfa Segurança Ltda']];
     const i1 = importar(e, 'a.xlsx', linhas);
-    expect([i1.novos, i1.repetidos, e.boletins[0].quantidade]).toEqual([3, 1, 3]);
+    expect([i1.novos, i1.repetidos, i1.repetidosNoArquivo, e.boletins[0].quantidade]).toEqual([3, 0, 1, 3]);
     const i2 = importar(e, 'copia de a.xlsx', linhas);
     expect(i2.repetida).toBe(true);
     const novo = { nome: pessoa(), cpf: cpf() };
