@@ -1,7 +1,7 @@
 // Consultas públicas que poupam digitação: Receita Federal (via BrasilAPI) e CEP (via ViaCEP).
 // Se falharem, o app segue normalmente e o campo fica para preencher à mão.
 import { Cliente } from '../core/model';
-import { digits, isEmail } from '../core/text';
+import { digits, juntarEmails, listaEmails } from '../core/text';
 
 const tx = (v: unknown) => (v == null ? '' : String(v).replace(/\s+/g, ' ').trim());
 
@@ -29,7 +29,7 @@ export function aplicarCnpj(x: Cliente, d: Record<string, unknown>) {
   if (!en.uf) en.uf = tx(d.uf).toUpperCase().slice(0, 2);
   if (!en.cep) en.cep = digits(d.cep);
   if (!en.codMunicipio) en.codMunicipio = digits(d.codigo_municipio_ibge);
-  if (!x.email && isEmail(d.email)) x.email = tx(d.email).toLowerCase();
+  if (!listaEmails(x.email).length && listaEmails(d.email).length) x.email = juntarEmails(listaEmails(d.email));
   if (!x.telefone) x.telefone = digits(d.ddd_telefone_1).slice(0, 11);
   const razao = tx(d.razao_social);
   if (razao && razao.toLowerCase() !== x.nome.toLowerCase()) {

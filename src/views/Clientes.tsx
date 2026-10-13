@@ -1,9 +1,9 @@
 import { useState } from 'react';
 import { Cliente, enderecoVazio, Estado, faltasDoCliente, juntarClientes } from '../core/model';
-import { digits, fmtCNPJ, fmtCPF, isCNPJ, isCPF, isEmail, parseMoney, uid } from '../core/text';
+import { digits, fmtCNPJ, fmtCPF, isCNPJ, isCPF, listaEmails, parseMoney, uid } from '../core/text';
 import { alterar } from '../automation';
 import { aplicarCep, aplicarCnpj, buscarCep, buscarCnpj } from '../lib/externo';
-import { Campo, Janela } from '../ui';
+import { Campo, CampoEmails, Janela } from '../ui';
 
 const fmtDoc = (v: string) => (digits(v).length === 14 ? fmtCNPJ(v) : digits(v).length === 11 ? fmtCPF(v) : v);
 
@@ -42,7 +42,7 @@ export function ClienteJanela({ e, id, fechar }: { e: Estado; id: string; fechar
       <div className="grade">
         <Campo classe="c12" rotulo="Nome ou razão social" valor={c.nome} aoMudar={(v) => mud((x) => { if (v.trim()) { x.nome = v.trim(); x.naoIdentificado = false; } })} />
         <Campo classe="c6" rotulo="CNPJ" valor={fmtDoc(c.cnpj)} modo="numeric" aoMudar={aoCnpj} invalido={!!c.cnpj && !isCNPJ(c.cnpj) && !isCPF(c.cnpj)} dica="Ao digitar, eu busco o endereço sozinho." />
-        <Campo classe="c6" rotulo="E-mail para receber boletim e nota" valor={c.email} tipo="email" modo="email" aoMudar={(v) => mud((x) => { x.email = v.trim().toLowerCase(); })} invalido={!!c.email && !isEmail(c.email)} />
+        <CampoEmails classe="c12" rotulo="E-mails para receber boletim e nota" valor={c.email} aoMudar={(v) => mud((x) => { x.email = v; })} dica="Pode pôr vários: digite um e aperte Enter, ou cole a lista inteira." />
         <Campo classe="c4" rotulo="CEP" valor={en.cep} modo="numeric" aoMudar={aoCep} />
         <Campo classe="c8" rotulo="Rua / avenida" valor={en.logradouro} aoMudar={(v) => mud((x) => { x.endereco.logradouro = v.trim(); })} />
         <Campo classe="c3" rotulo="Número" valor={en.numero} aoMudar={(v) => mud((x) => { x.endereco.numero = v.trim(); })} />
@@ -102,7 +102,7 @@ export function Clientes({ e, abrirCliente }: { e: Estado; abrirCliente: (id: st
             return (
               <button key={c.id} className="boletim" onClick={() => abrirCliente(c.id)}>
                 <div className="topo"><span className="nome">{c.nome}</span>{f.length ? <span className="selo ambar">Falta {f.join(', ')}</span> : <span className="selo ok">Cadastro completo</span>}</div>
-                <div className="mudo pequeno">{[c.cnpj ? fmtDoc(c.cnpj) : '', c.email, `${n} psicoteste${n === 1 ? '' : 's'}`].filter(Boolean).join(', ')}</div>
+                <div className="mudo pequeno">{[c.cnpj ? fmtDoc(c.cnpj) : '', listaEmails(c.email).join(', '), `${n} psicoteste${n === 1 ? '' : 's'}`].filter(Boolean).join(', ')}</div>
               </button>
             );
           })}

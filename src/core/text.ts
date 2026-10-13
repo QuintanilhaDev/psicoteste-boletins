@@ -54,6 +54,13 @@ export const fmtCNPJ = (v: string) => {
     : v;
 };
 
+/** todos os e-mails de um texto ("a@x.com; b@y.com.br, c@z.com"), sem repetir, em minúsculas */
+export function listaEmails(v: unknown): string[] {
+  const achados = String(v ?? '').match(/[^\s@,;:<>()"'\[\]]+@[^\s@,;:<>()"'\[\]]+\.[a-z]{2,}/gi) ?? [];
+  return [...new Set(achados.map((x) => x.toLowerCase().replace(/[.]+$/, '')))].filter((x) => isEmail(x));
+}
+export const juntarEmails = (l: string[]) => [...new Set(l.map((x) => x.trim().toLowerCase()).filter(Boolean))].join(', ');
+
 export const isEmail = (v: unknown) => /^[^\s@,;]+@[^\s@,;]+\.[a-z]{2,}$/i.test(String(v ?? '').trim());
 
 export const brl = (n: number) =>

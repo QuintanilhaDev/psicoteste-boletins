@@ -1,12 +1,12 @@
 import { useRef, useState } from 'react';
 import { Estado, juntarClientes, pendencias, Pendencia, resolverRepetidos } from '../core/model';
 import { parseMoney } from '../core/text';
-import { alterar, podeEmitir, processarArquivos, rodar } from '../automation';
+import { aguardandoConferencia, alterar, podeEmitir, processarArquivos, rodar } from '../automation';
 import { salvarSenha } from '../lib/api';
 import { atualizarStatus, setUi, Ui } from '../store';
 import { CartaoBoletim, Icone } from '../ui';
 
-interface Nav { abrirBoletim: (id: string) => void; abrirCliente: (id: string) => void; ir: (v: string) => void }
+interface Nav { abrirBoletim: (id: string) => void; abrirCliente: (id: string) => void; ir: (v: string) => void; abrirConferencia: () => void }
 
 export const ACEITOS = '.xlsx,.xls,.xlsm,.csv,.ods,.txt,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,text/csv';
 
@@ -129,12 +129,13 @@ export function Inicio({ e, ui, nav }: { e: Estado; ui: Ui; nav: Nav }) {
   };
   const recentes = [...e.boletins].sort((a, b) => b.numero - a.numero).slice(0, 6);
   const naFila = e.boletins.filter((b) => podeEmitir(e, b)).length;
+  const conferir = e.boletins.filter(aguardandoConferencia).length;
   const st = ui.status;
   return (
     <>
       <label className={`zona ${sobre ? 'sobre' : ''}`} onDragOver={(ev) => { ev.preventDefault(); setSobre(true); }} onDragLeave={() => setSobre(false)} onDrop={() => setSobre(false)}>
         <h1>Solte as planilhas aqui.</h1>
-        <p>Eu leio qualquer formato, monto o boletim de cada empresa, emito a nota fiscal, envio os dois por e-mail ao cliente e salvo tudo em Downloads.</p>
+        <p>Eu leio qualquer formato, monto o boletim de cada empresa, emito a nota fiscal e salvo tudo em Downloads. Antes de mandar ao cliente, você confere cada e-mail.</p>
         <span className="escolher"><Icone.subir /> Escolher planilhas</span>
         <input ref={input} type="file" multiple accept={ACEITOS} onChange={(ev) => receber(ev.target.files)} aria-label="Escolher planilhas de psicotestes" />
         <svg className="folhas" viewBox="0 0 200 180" aria-hidden="true">
@@ -161,6 +162,12 @@ export function Inicio({ e, ui, nav }: { e: Estado; ui: Ui; nav: Nav }) {
       </div>
 
       {st.online && st.senhaDefinida && !st.autenticado && <Senha />}
+      {conferir > 0 && (
+        <div className="faixa conferencia">
+          <p className="cresce"><strong>{conferir === 1 ? '1 e-mail pronto para você conferir' : `${conferir} e-mails prontos para você conferir`}</strong><br /><span className="pequeno">Boletim (PDF e Excel) e nota fiscal de cada cliente. Nada sai antes de você confirmar.</span></p>
+          <button className="btn" onClick={nav.abrirConferencia}>Conferir e enviar</button>
+        </div>
+      )}
       <Pendencias e={e} nav={nav} />
 
       <section className="secao" aria-labelledby="t-rec">

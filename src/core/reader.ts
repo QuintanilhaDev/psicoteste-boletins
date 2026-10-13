@@ -3,7 +3,7 @@
 // Não depende de posição, cabeçalho, ordem de colunas nem de formatação.
 
 import {
-  Cell, digits, norm, isCPF, isCNPJ, isEmail, parseDate, findCompetencia,
+  Cell, digits, norm, isCPF, isCNPJ, listaEmails, juntarEmails, parseDate, findCompetencia,
   nomeBonito, similaridade,
 } from './text';
 
@@ -270,7 +270,7 @@ function mapearColunas(linhas: Cell[][]): Colunas {
       if (cp) { e.cpf++; if (cp.valido) e.cpfValido++; }
       if (cnpjDe(c)) e.cnpj++;
       if (parseDate(c) && !cp) e.data++;
-      if (isEmail(c)) e.email++;
+      if (listaEmails(c).length) e.email++;
       if (pareceNomePessoa(c)) e.pessoa++;
       if (typeof c === 'string') {
         if (/[a-zA-ZÀ-ú]/.test(c)) e.texto++;
@@ -437,7 +437,8 @@ function lerAba(aba: Aba, arquivo: string, multiplasAbas: boolean, op: OpcoesLei
       } else empresaLinha = ultimaEmpresa;
     }
     const cnpjLinha = col.cnpj >= 0 ? cnpjDe(l[col.cnpj] ?? null) ?? undefined : undefined;
-    const emailLinha = col.email >= 0 && isEmail(l[col.email]) ? texto(l[col.email]).toLowerCase() : undefined;
+    const emailsDaLinha = col.email >= 0 ? listaEmails(l[col.email]) : [];
+    const emailLinha = emailsDaLinha.length ? juntarEmails(emailsDaLinha) : undefined;
     if (cnpjLinha) ultimoCnpj = cnpjLinha;
     if (emailLinha) ultimoEmail = emailLinha;
     const empresa = empresaLinha ?? secao ?? fallback;

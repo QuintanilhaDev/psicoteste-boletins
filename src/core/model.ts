@@ -2,7 +2,7 @@
 
 import { Leitura } from './reader';
 import {
-  competenciaLabel, digits, empresaKey, isCNPJ, isCPF, isEmail, norm, round2, semelhancaNucleo, similaridade, uid, brl,
+  competenciaLabel, digits, empresaKey, isCNPJ, isCPF, juntarEmails, listaEmails, norm, round2, semelhancaNucleo, similaridade, uid, brl,
 } from './text';
 
 export interface Endereco {
@@ -24,10 +24,18 @@ export interface Nota {
   origem?: 'automatica' | 'manual';
   rps?: number; serie?: string; protocolo?: string;
   numero?: string; codigo?: string; emitidaEm?: string; xml?: string; ambiente?: string;
+  /** valor que a prefeitura registrou na nota (para conferir com o boletim) */
+  valor?: number;
   erro?: string; tentativas: number;
   anexo?: { nome: string; base64: string; tipo: string };
 }
-export interface Envio { status: 'pendente' | 'enviado' | 'erro'; para?: string; em?: string; erro?: string; tentativas: number }
+export interface Envio {
+  /** dispensado = você decidiu não mandar por aqui */
+  status: 'pendente' | 'enviado' | 'erro' | 'dispensado';
+  /** liberado por você na tela de conferência; sem isso nenhum e-mail sai */
+  aprovado?: boolean;
+  para?: string; em?: string; erro?: string; tentativas: number;
+}
 export interface Boletim {
   id: string; numero: number; clienteId: string; competencia: string;
   pessoas: Pessoa[]; quantidade: number; precoUnit: number; total: number;
@@ -290,7 +298,7 @@ export function importarLeitura(e: Estado, arquivo: string, hash: string, leitur
   };
   const completar = (c: Cliente, cnpj?: string, email?: string) => {
     if (cnpj && !c.cnpj) c.cnpj = cnpj;
-    if (email && !c.email) c.email = email;
+    if (email && !listaEmails(c.email).length) c.email = juntarEmails(listaEmails(email));
   };
 
   for (const r of leitura.registros) {
@@ -377,7 +385,7 @@ export function enderecoCompleto(en: Endereco) {
 export function faltasDoCliente(c: Cliente): string[] {
   const f: string[] = [];
   if (!isCNPJ(c.cnpj) && !isCPF(c.cnpj)) f.push('CNPJ');
-  if (!isEmail(c.email)) f.push('e-mail');
+  if (!listaEmails(c.email).length) f.push('e-mail');
   if (!enderecoCompleto(c.endereco)) f.push('endereço');
   return f;
 }
@@ -421,7 +429,7 @@ export function juntarClientes(e: Estado, origemId: string, destinoId: string) {
   if (!o || !d) return;
   if (!o.naoIdentificado) for (const n of [o.nome, ...o.apelidos]) if (!d.apelidos.includes(n) && n !== d.nome) d.apelidos.push(n);
   if (!d.cnpj) d.cnpj = o.cnpj;
-  if (!d.email) d.email = o.email;
+  d.email = juntarEmails([...listaEmails(d.email), ...listaEmails(o.email)]);
   if (!d.telefone) d.telefone = o.telefone;
   if (!enderecoCompleto(d.endereco) && enderecoCompleto(o.endereco)) d.endereco = o.endereco;
   // quem já está num boletim do cliente de destino não é cobrado de novo
@@ -517,4 +525,34 @@ export function resolverRepetidos(e: Estado, boletimId: string, cobrar: boolean)
     for (const i of e.importacoes) i.boletimIds = i.boletimIds.filter((x) => x !== boletimId);
   }
   recalcular(e);
+}
+
+export interface Verificacao { tipo: 'ok' | 'aviso' | 'erro'; texto: string }
+
+/** Tudo o que é conferido antes de um e-mail sair. Um "erro" impede o envio. */
+export function verificacoes(e: Estado, b: Boletim): Verificacao[] {
+  const v: Verificacao[] = [];
+  const c = clienteDe(e, b);
+  if (b.pessoas.length) {
+    const unicos = deduplicar(b.pessoas).length;
+    if (unicos !== b.pessoas.length) v.push({ tipo: 'erro', texto: `${b.pessoas.length - unicos} nome(s) repetido(s) na lista de vigilantes.` });
+    else if (b.quantidade !== b.pessoas.length) v.push({ tipo: 'erro', texto: `Quantidade (${b.quantidade}) diferente da lista (${b.pessoas.length} nomes).` });
+    else v.push({ tipo: 'ok', texto: `${b.quantidade} vigilante${b.quantidade === 1 ? '' : 's'}, sem nomes repetidos.` });
+  } else v.push({ tipo: 'aviso', texto: `${b.quantidade} psicotestes informados em planilha-resumo, sem lista de nomes.` });
+  if (!(b.total > 0)) v.push({ tipo: 'erro', texto: 'Boletim sem valor.' });
+  else if (Math.abs(round2(b.quantidade * b.precoUnit) - b.total) > 0.009) v.push({ tipo: 'erro', texto: `A conta não fecha: ${b.quantidade} × ${brl(b.precoUnit)} não dá ${brl(b.total)}.` });
+  else v.push({ tipo: 'ok', texto: `${b.quantidade} × ${brl(b.precoUnit)} = ${brl(b.total)}.` });
+  if (b.nota.status !== 'emitida' || !b.nota.numero) v.push({ tipo: 'erro', texto: 'Nota fiscal ainda não emitida.' });
+  else if (b.nota.origem === 'manual') v.push({ tipo: 'aviso', texto: `Nota nº ${b.nota.numero} informada por você: confira o número${b.nota.anexo ? '' : ' (vai sem o arquivo da nota)'}.` });
+  else if (b.nota.valor != null && Math.abs(b.nota.valor - b.total) > 0.009) v.push({ tipo: 'erro', texto: `A nota nº ${b.nota.numero} foi emitida com ${brl(b.nota.valor)}, diferente do boletim (${brl(b.total)}).` });
+  else v.push({ tipo: 'ok', texto: `Nota fiscal nº ${b.nota.numero}${b.nota.valor != null ? `, no mesmo valor do boletim` : ''}.` });
+  if (b.nota.status === 'emitida' && b.nota.origem === 'automatica' && b.nota.ambiente !== 'producao') v.push({ tipo: 'aviso', texto: 'Nota de teste (homologação), sem valor fiscal.' });
+  const invalidos = b.pessoas.filter((p) => !p.cpfValido).length;
+  if (invalidos) v.push({ tipo: 'aviso', texto: `${invalidos} CPF(s) ausente(s) ou inválido(s) na lista.` });
+  const emails = listaEmails(c?.email);
+  if (!emails.length) v.push({ tipo: 'erro', texto: 'Cliente sem e-mail cadastrado.' });
+  else v.push({ tipo: 'ok', texto: `Vai para ${emails.join(', ')}.` });
+  if (b.email.em && b.email.status !== 'erro') v.push({ tipo: 'aviso', texto: `Já foi enviado em ${new Date(b.email.em).toLocaleDateString('pt-BR')}: este será um reenvio.` });
+  for (const o of b.observacoes) if (o.startsWith('Atenção')) v.push({ tipo: 'aviso', texto: o });
+  return v;
 }

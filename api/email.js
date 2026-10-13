@@ -11,6 +11,7 @@ export default envolver(async (req, res) => {
   const b = await lerCorpo(req);
   const para = String(b.para ?? '').split(/[;,\s]+/).filter(Boolean);
   if (!para.length || !para.every((e) => RE.test(e))) throw new Falha('E-mail do cliente inválido.');
+  if (para.length > 20) throw new Falha('No máximo 20 destinatários por envio.');
   const anexos = Array.isArray(b.anexos) ? b.anexos.slice(0, 6) : [];
   const porta = Number(process.env.SMTP_PORT) || 587;
   const transporte = nodemailer.createTransport({
@@ -25,7 +26,7 @@ export default envolver(async (req, res) => {
       from: nomeRemetente ? `"${nomeRemetente}" <${remetente}>` : remetente,
       to: para.join(', '),
       bcc: process.env.EMAIL_COPIA || undefined,
-      replyTo: RE.test(String(b.responderPara ?? '')) ? b.responderPara : undefined,
+      replyTo: String(b.responderPara ?? '').split(/[;,\s]+/).filter((x) => RE.test(x)).join(', ') || undefined,
       subject: String(b.assunto ?? '').replace(/[\r\n]+/g, ' ').slice(0, 200),
       text: String(b.texto ?? ''),
       html: typeof b.html === 'string' ? b.html : undefined,

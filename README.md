@@ -3,11 +3,12 @@
 Ferramenta web para a clínica: solta-se a planilha de psicotestes e o sistema
 
 1. lê a planilha (qualquer layout) e separa os vigilantes por empresa e por mês;
-2. monta um **boletim em PDF** para cada empresa;
+2. monta um **boletim em PDF e em planilha Excel** para cada empresa;
 3. emite a **NFS-e na Prefeitura de Salvador** (web service oficial, com certificado A1);
-4. envia boletim + nota para o **e-mail cadastrado do cliente**;
-5. salva tudo na pasta **Downloads**;
-6. mostra o **caixa**: psicotestes por cliente e por mês, nota tirada, recebido (baixa) e em aberto, com exportação para Excel.
+4. salva tudo na pasta **Downloads** — um .zip com os PDFs e a pasta **EM PLANILHA** com os boletins em Excel;
+5. mostra a **conferência**: cada e-mail (destinatários, verificações e anexos) espera a sua confirmação;
+6. depois de confirmado, envia boletim (PDF e Excel) + nota para **todos os e-mails cadastrados do cliente**;
+7. mostra o **caixa**: psicotestes por cliente e por mês, nota tirada, recebido (baixa) e em aberto, com exportação para Excel.
 
 Funciona no computador e no celular.
 
@@ -53,6 +54,8 @@ A Vercel roda as funções em São Paulo (`gru1`, definido em `vercel.json`).
 
 - **Nada é cobrado duas vezes.** Planilha repetida é reconhecida pelo conteúdo; a mesma pessoa (CPF) no mesmo cliente e mês não entra de novo; o número do RPS é gravado antes de falar com a prefeitura, então queda de internet ou página fechada no meio não gera nota em dobro.
 - **Na dúvida, pergunta em vez de adivinhar.** Empresa não identificada, nomes parecidos, cadastro incompleto, preço faltando ou gente repetida de outro mês aparecem em "Só falta você me dizer" e seguram só aquele boletim.
+- **Nenhum e-mail sai sem conferência.** Quando a nota fica pronta, aparece "Conferir e enviar" na tela inicial. Para cada cliente o sistema verifica nomes repetidos, a conta (quantidade × preço), se a nota tem o mesmo valor do boletim, CPFs inválidos e e-mails; o que tiver erro não pode ser enviado. Você vê os anexos, o texto e os destinatários e escolhe o que sai.
+- **Vários e-mails** em todos os campos de e-mail (cliente e clínica): digite e aperte Enter, ou cole a lista. Planilhas com vários e-mails na mesma célula também são lidas.
 - **Cliente novo** entra sozinho no cadastro. Se a planilha traz o CNPJ, razão social e endereço são buscados na Receita (BrasilAPI). O e-mail é informado uma vez.
 - Antes de emitir há uma contagem de 8 segundos com botão **Pausar** — nota emitida só se cancela no portal.
 - Sem certificado, use **"Já emiti no portal"** no boletim: informa-se o número da nota e o sistema envia o e-mail e controla o caixa do mesmo jeito.
@@ -66,7 +69,7 @@ Ficam no navegador (IndexedDB). Em **Ajustes** há cópia de segurança (baixar/
 ```bash
 npm install
 npm run dev        # só a interface (sem /api)
-npm test           # leitor de planilhas, regras de negócio e NFS-e (53 testes; 400 planilhas aleatórias)
+npm test           # leitor de planilhas, regras de negócio e NFS-e (69 testes; 400 planilhas aleatórias)
 npm run simular    # fluxo inteiro num navegador, com prefeitura e e-mail simulados (precisa do Playwright)
 ```
 

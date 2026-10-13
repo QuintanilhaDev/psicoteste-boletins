@@ -1,6 +1,6 @@
 import { ReactNode, useEffect, useId, useRef, useState } from 'react';
 import { Boletim, Estado, clienteDe, pendencias } from './core/model';
-import { brl, competenciaLabel, fmtDate } from './core/text';
+import { brl, competenciaLabel, fmtDate, isEmail, juntarEmails, listaEmails } from './core/text';
 import { Ui } from './store';
 import { boletimPronto } from './automation';
 
@@ -44,7 +44,57 @@ export function Campo(p: {
   );
 }
 
-export function Janela(p: { titulo: string; sub?: string; aoFechar: () => void; children: ReactNode }) {
+/**
+ * Vários e-mails num campo só: cada endereço vira uma etiqueta removível.
+ * Digite e aperte Enter, vírgula ou espaço — ou cole uma lista inteira.
+ */
+export function CampoEmails(p: { rotulo: string; valor: string; aoMudar: (v: string) => void; dica?: string; classe?: string }) {
+  const id = useId();
+  const lista = listaEmails(p.valor);
+  const [texto, setTexto] = useState('');
+  const [erro, setErro] = useState('');
+  const confirmar = (bruto: string) => {
+    const partes = bruto.split(/[\s,;]+/).map((x) => x.trim()).filter(Boolean);
+    if (!partes.length) { setTexto(''); setErro(''); return; }
+    const bons = partes.filter((x) => isEmail(x)).map((x) => x.toLowerCase());
+    const ruins = partes.filter((x) => !isEmail(x));
+    if (bons.length) p.aoMudar(juntarEmails([...lista, ...bons]));
+    setTexto(ruins.join(' '));
+    setErro(ruins.length ? `"${ruins[0]}" não parece um e-mail. Confira e aperte Enter.` : '');
+  };
+  const remover = (x: string) => p.aoMudar(juntarEmails(lista.filter((y) => y !== x)));
+  return (
+    <div className={`campo ${p.classe ?? ''} ${erro ? 'invalido' : ''}`}>
+      <label htmlFor={id}><span style={{ fontWeight: 700, fontSize: '0.92rem' }}>{p.rotulo}</span></label>
+      <div className="emails">
+        {lista.map((x) => (
+          <span key={x} className="etiqueta">
+            {x}
+            <button type="button" onClick={() => remover(x)} aria-label={`Remover ${x}`}><Icone.fechar /></button>
+          </span>
+        ))}
+        <input
+          id={id} type="email" inputMode="email" autoComplete="off" multiple value={texto}
+          placeholder={lista.length ? 'Adicionar outro e-mail' : 'nome@empresa.com.br'}
+          onChange={(ev) => {
+            const v = ev.target.value;
+            if (/[,;\s]$/.test(v) && v.trim()) confirmar(v);
+            else { setTexto(v); if (erro) setErro(''); }
+          }}
+          onKeyDown={(ev) => {
+            if (ev.key === 'Enter') { ev.preventDefault(); confirmar(texto); }
+            else if (ev.key === 'Backspace' && !texto && lista.length) remover(lista[lista.length - 1]);
+          }}
+          onPaste={(ev) => { const t = ev.clipboardData.getData('text'); if (/[,;\s]/.test(t.trim())) { ev.preventDefault(); confirmar(texto + ' ' + t); } }}
+          onBlur={() => confirmar(texto)}
+        />
+      </div>
+      {erro ? <small style={{ color: 'var(--ruim)' }} role="alert">{erro}</small> : p.dica && <small>{p.dica}</small>}
+    </div>
+  );
+}
+
+export function Janela(p: { titulo: string; sub?: string; aoFechar: () => void; children: ReactNode; largo?: boolean }) {
   const ref = useRef<HTMLDivElement>(null);
   useEffect(() => {
     const anterior = document.activeElement as HTMLElement | null;
@@ -57,7 +107,7 @@ export function Janela(p: { titulo: string; sub?: string; aoFechar: () => void; 
   }, []);
   return (
     <div className="fundo" onMouseDown={(e) => { if (e.target === e.currentTarget) p.aoFechar(); }}>
-      <div className="janela" role="dialog" aria-modal="true" aria-label={p.titulo} tabIndex={-1} ref={ref}>
+      <div className={`janela ${p.largo ? 'larga' : ''}`} role="dialog" aria-modal="true" aria-label={p.titulo} tabIndex={-1} ref={ref}>
         <header>
           <div>
             <h2>{p.titulo}</h2>
@@ -83,15 +133,17 @@ export function situacaoDe(e: Estado, ui: Ui, b: Boletim): Situacao {
     passos[0] = 'feito';
     passos[1] = 'feito';
     passos[3] = b.recebido ? 'feito' : '';
-    if (b.email.status === 'enviado') {
+    if (b.email.status === 'enviado' || b.email.status === 'dispensado') {
       passos[2] = 'feito';
+      if (b.email.status === 'dispensado' && !b.recebido) { passos[3] = 'agora'; return s('E-mail não enviado por aqui (decisão sua). Aguardando pagamento.', 'neutro'); }
       if (b.recebido) return s(`Recebido em ${fmtDate(b.recebidoEm)}`, 'ok');
       passos[3] = 'agora';
       return s('Nota e boletim enviados. Aguardando pagamento.', 'neutro');
     }
     if (b.email.status === 'erro') { passos[2] = 'erro'; return s(`E-mail não enviado: ${b.email.erro ?? 'erro'}`, 'ruim'); }
     passos[2] = 'agora';
-    if (!clienteDe(e, b)?.email) return s('Falta o e-mail do cliente para enviar.', 'ambar');
+    if (b.email.status === 'pendente' && !b.email.aprovado) return s('Nota emitida. Esperando você conferir e liberar o e-mail.', 'ambar');
+    if (!listaEmails(clienteDe(e, b)?.email).length) return s('Falta o e-mail do cliente para enviar.', 'ambar');
     if (!ui.status.email.pronto) return s('Nota emitida. O envio por e-mail ainda não foi ligado.', 'ambar');
     return s('Nota emitida. Enviando por e-mail…', 'neutro');
   }

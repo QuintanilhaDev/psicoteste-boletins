@@ -74,20 +74,34 @@ async function abrir(amb, { celular = false, senha = true, ritmo = 0.02, armazen
   const soltar = (arqs) => page.setInputFiles('.zona input', arqs.map((a) => ({ name: path.basename(a), mimeType: 'application/octet-stream', buffer: fs.readFileSync(a) })));
   const ir = async (t) => { await page.evaluate((x) => { location.hash = `/${x}`; }, t); await page.waitForTimeout(80); };
   const semRolagemLateral = async (onde) => ok(await page.evaluate(() => document.scrollingElement.scrollWidth <= window.innerWidth + 1), `sem rolagem lateral em ${onde}`);
-  return { ctx, page, erros, baixados, estado, ate, soltar, ir, semRolagemLateral };
+  // abre a conferência pelo aviso da tela inicial, confere a quantidade de e-mails e libera o envio
+  const conferir = async (n, foto) => {
+    await ir('inicio');
+    await page.getByRole('button', { name: 'Conferir e enviar', exact: true }).click();
+    const d = page.getByRole('dialog', { name: 'Conferir antes de enviar' });
+    await d.waitFor();
+    igual(await d.locator('article.conferir').count(), n, `conferência lista ${n} e-mail(s)`);
+    await page.waitForFunction(() => !document.querySelector('.janela')?.textContent?.includes('Preparando os anexos'), null, { timeout: 15000 });
+    ok((await d.locator('.verificacoes .erro').count()) === 0, 'conferência sem bloqueios');
+    if (foto) await page.screenshot({ path: path.join(fotos, `${foto}.png`), fullPage: false });
+    await d.getByRole('button', { name: new RegExp(`^Enviar ${n} e-mail`) }).click();
+    await d.waitFor({ state: 'detached' });
+  };
+  return { ctx, page, erros, baixados, estado, ate, soltar, ir, semRolagemLateral, conferir };
 }
 async function preencher(page, rotulo, valor, escopo = page) {
   const c = escopo.getByLabel(rotulo, { exact: false }).first();
   await c.fill(valor);
   await c.blur();
 }
+const listaDoEstado = (e) => e?.clientes?.[0]?.email;
 const arquivosDoZip = async (p) => Object.keys((await JSZip.loadAsync(fs.readFileSync(p))).files).sort();
 async function configurarClinica(t) {
   await t.ir('ajustes');
   await preencher(t.page, 'Razão social', 'Clínica Teste Ltda');
   await preencher(t.page, 'CNPJ', '11.222.333/0001-81');
   await preencher(t.page, 'Inscrição municipal', '123.456/001-99');
-  await preencher(t.page, 'E-mail', 'contato@clinicateste.com.br');
+  await preencher(t.page, 'E-mails da clínica', 'contato@clinicateste.com.br; financeiro@clinicateste.com.br');
   await preencher(t.page, 'Preço de cada psicoteste', '85,50');
   await preencher(t.page, 'CNAE', '8650003');
   await t.ir('inicio');
@@ -112,7 +126,8 @@ cenario('1. Primeiro uso, sem certificado nem e-mail: boletins, nota manual, cai
   igual(e.boletins.map((b) => b.total).sort((a, b) => a - b), [342, 598.5], 'totais calculados');
   await t.page.waitForTimeout(400);
   igual(t.baixados.length, 1, 'um único download (zip)');
-  igual((await arquivosDoZip(t.baixados[0].caminho)).length, 2, 'zip com os 2 boletins em PDF');
+  const z1 = await arquivosDoZip(t.baixados[0].caminho);
+  igual(z1.map((n) => n.replace(/-\d.*$/, '')), ['Boletim', 'Boletim', 'EM PLANILHA/', 'EM PLANILHA/Boletim', 'EM PLANILHA/Boletim'], 'zip: 2 PDFs + pasta EM PLANILHA com 2 Excel');
   const pdf = await (await JSZip.loadAsync(fs.readFileSync(t.baixados[0].caminho))).file(/Alfa/)[0].async('nodebuffer');
   ok(pdf.subarray(0, 5).toString() === '%PDF-' && pdf.length > 3000, 'PDF do boletim é válido');
   ok(await t.page.getByText(/Falta CNPJ, e-mail, endereço de Alfa/).first().isVisible(), 'diz o que falta no cadastro do cliente');
@@ -168,7 +183,7 @@ cenario('1. Primeiro uso, sem certificado nem e-mail: boletins, nota manual, cai
 });
 
 // ---------------------------------------------------------------------------------------------
-cenario('2. Tudo configurado: planilha → boletim → nota → e-mail → download, sem cliques', async () => {
+cenario('2. Tudo configurado: planilha → boletim → nota → download → conferência → e-mail', async () => {
   const amb = await subir();
   const t = await abrir(amb);
   await configurarClinica(t);
@@ -176,7 +191,12 @@ cenario('2. Tudo configurado: planilha → boletim → nota → e-mail → downl
   const arq = planilha('abril.xlsx', { Plan1: [['Vigilante', 'CPF', 'Razão Social', 'CNPJ', 'E-mail', 'Data'], ...g.map((p) => [p[0], p[1], 'Alfa Segurança', '11.444.777/0001-61', 'financeiro@alfa.com.br', '14/04/2026'])] });
   await t.soltar([arq]);
   await t.page.locator('.contador').waitFor({ timeout: 8000 });
-  let e = await t.ate((x) => x.boletins[0]?.email.status === 'enviado' && x.boletins[0].baixado.nota, 'nota emitida, e-mail enviado e baixado', 20000);
+  let e = await t.ate((x) => x.boletins[0]?.nota.status === 'emitida' && x.boletins[0].baixado.nota, 'nota emitida e baixada', 20000);
+  await t.page.waitForTimeout(1500);
+  igual([amb.emails.length, e.boletins[0].email.status], [0, 'pendente'], 'nenhum e-mail sai antes da conferência');
+  ok(await t.page.getByText('1 e-mail pronto para você conferir').isVisible(), 'aviso de conferência na tela inicial');
+  await t.conferir(1, '2-conferencia-desktop');
+  e = await t.ate((x) => x.boletins[0]?.email.status === 'enviado', 'e-mail enviado depois de conferido');
   const b = e.boletins[0];
   igual([b.nota.status, b.nota.origem, b.nota.rps, b.nota.numero, b.total, b.competencia], ['emitida', 'automatica', 1, '2026001', 427.5, '2026-04'], 'nota registrada');
   igual(e.clientes[0].nome, 'ALFA SEGURANCA PATRIMONIAL LTDA', 'razão social oficial veio do CNPJ');
@@ -187,20 +207,22 @@ cenario('2. Tudo configurado: planilha → boletim → nota → e-mail → downl
   ok(/5 vigilante\(s\), competência abril de 2026/.test(lote), 'discriminação da nota');
   igual(amb.emails.length, 1, 'um e-mail enviado');
   const m = amb.emails[0];
-  igual([m.to.text, m.attachments.length, m.replyTo.text], ['financeiro@alfa.com.br', 3, 'contato@clinicateste.com.br'], 'e-mail para o cliente com 3 anexos');
-  igual(m.attachments.map((a) => a.filename.split('-')[0]).sort(), ['Boletim', 'NFSe', 'NFSe'], 'anexos: boletim, nota PDF e XML');
+  igual([m.to.text, m.attachments.length, m.replyTo.text], ['financeiro@alfa.com.br', 4, 'contato@clinicateste.com.br, financeiro@clinicateste.com.br'], 'e-mail com 4 anexos e resposta para os 2 e-mails da clínica');
+  igual(m.attachments.map((a) => a.filename.replace(/^(\w+)-.*\.(\w+)$/, '$1.$2')).sort(), ['Boletim.pdf', 'Boletim.xlsx', 'NFSe.pdf', 'NFSe.xml'], 'anexos: boletim em PDF e Excel, nota em PDF e XML');
   ok(m.attachments.every((a) => a.size > 500), 'anexos têm conteúdo');
   ok(m.subject.includes('abril de 2026') && m.text.includes('R$ 427,50') && m.text.includes('VER-2026001'), 'texto do e-mail');
   await t.page.waitForTimeout(400);
   const nomes = (await Promise.all(t.baixados.map((d) => (d.nome.endsWith('.zip') ? arquivosDoZip(d.caminho) : [d.nome])))).flat();
-  igual(nomes.map((n) => n.split('-')[0]).sort(), ['Boletim', 'NFSe', 'NFSe'], 'Downloads: boletim + nota (PDF e XML)');
+  igual(nomes.map((n) => n.replace(/-.*$/, '')).sort(), ['Boletim', 'EM PLANILHA/', 'EM PLANILHA/Boletim', 'NFSe', 'NFSe'], 'Downloads: boletim PDF, pasta EM PLANILHA com o Excel, nota PDF e XML');
   await t.page.screenshot({ path: path.join(fotos, '2-emitida-desktop.png'), fullPage: true });
 
-  // segunda planilha do mesmo cliente, só com o nome da planilha: ZERO interação
+  // segunda planilha do mesmo cliente, só com o nome da planilha: a única interação é conferir o e-mail
   const cliques = amb.pref.envios;
   const arq2 = planilha('maio.xlsx', { 'Alfa Segurança': [['Nome', 'CPF', 'Data'], ...gente(3).map((p) => [p[0], p[1], '05/05/2026'])], 'Beta Nova': [] });
   await t.soltar([arq2]);
-  e = await t.ate((x) => x.boletins.length === 2 && x.boletins[1].email.status === 'enviado' && x.boletins[1].baixado.nota, 'segunda nota 100% automática', 20000);
+  e = await t.ate((x) => x.boletins.length === 2 && x.boletins[1].nota.status === 'emitida' && x.boletins[1].baixado.nota, 'segunda nota automática', 20000);
+  await t.conferir(1);
+  e = await t.ate((x) => x.boletins[1].email.status === 'enviado', 'segundo e-mail enviado após conferência');
   igual([e.boletins[1].nota.rps, e.boletins[1].total, e.clientes.length], [2, 256.5, 1], 'segunda nota: RPS 2, mesmo cliente');
   igual([amb.pref.envios - cliques, amb.emails.length], [1, 2], 'um envio e um e-mail a mais');
 
@@ -240,7 +262,7 @@ cenario('3. Falhas: recusa, queda de conexão, lote com erro, RPS ocupado, pausa
   amb.pref.modo = 'ok';
   await t.page.locator('button.boletim').first().click();
   await t.page.getByRole('button', { name: 'Tentar a nota de novo' }).click();
-  e = await t.ate((x) => nota(x, i)?.status === 'emitida' && x.boletins[i].email.status === 'enviado', 'nova tentativa emite');
+  e = await t.ate((x) => nota(x, i)?.status === 'emitida', 'nova tentativa emite');
   igual(nota(e, i).rps, 1, 'reaproveita o mesmo RPS');
   await t.page.getByRole('button', { name: 'Fechar' }).click();
 
@@ -296,13 +318,20 @@ cenario('3. Falhas: recusa, queda de conexão, lote com erro, RPS ocupado, pausa
   await t.ate((x) => nota(x, i)?.protocolo, 'protocolo gravado');
   await t.page.reload(); await t.page.waitForSelector('.zona');
   amb.pref.situacoesAteProcessar = 1;
-  e = await t.ate((x) => nota(x, i)?.status === 'emitida' && x.boletins[i].email.status === 'enviado', 'retoma após recarregar', 20000);
+  e = await t.ate((x) => nota(x, i)?.status === 'emitida', 'retoma após recarregar', 20000);
   igual(amb.pref.envios - antesRecarga, 1, 'recarga no meio não reenvia o lote');
+
+  // tudo até aqui vai de uma vez, numa única conferência
+  igual(amb.emails.length, 0, 'nenhum e-mail saiu sem conferência');
+  await t.conferir(6);
+  await t.ate((x) => x.boletins.filter((b) => b.email.status === 'enviado').length === 6, 'seis e-mails enviados');
 
   // g) servidor de e-mail recusa, depois volta
   const senhaBoa = process.env.SMTP_PASS; process.env.SMTP_PASS = 'errada';
   const emailsAntes = amb.emails.length;
   i = await lancar();
+  await t.ate((x) => nota(x, i)?.status === 'emitida', 'nota emitida');
+  await t.conferir(1);
   e = await t.ate((x) => x.boletins[i]?.email.status === 'erro', 'falha de e-mail registrada');
   igual(nota(e, i).status, 'emitida', 'a nota não é afetada pela falha do e-mail');
   process.env.SMTP_PASS = senhaBoa;
@@ -318,7 +347,9 @@ cenario('3. Falhas: recusa, queda de conexão, lote com erro, RPS ocupado, pausa
   e = await t.ate((x) => nota(x, i)?.erro && nota(x, i).status === 'pendente', 'sem internet: fica na fila');
   amb.apiFora(false);
   await t.page.reload(); await t.page.waitForSelector('.zona');
-  e = await t.ate((x) => nota(x, i)?.status === 'emitida' && x.boletins[i].email.status === 'enviado', 'volta a internet e conclui');
+  e = await t.ate((x) => nota(x, i)?.status === 'emitida', 'volta a internet e conclui');
+  await t.conferir(1);
+  e = await t.ate((x) => x.boletins[i].email.status === 'enviado', 'e-mail enviado');
 
   e = await t.estado();
   igual(e.boletins.length, 8, 'oito boletins');
@@ -361,10 +392,14 @@ cenario('4. Celular: fluxo com pendências, cadastro do cliente pelo CEP e layou
   await preencher(t.page, 'CNPJ', '11.444.777/0001-61', j);
   await t.ate((x) => x.clientes[0].endereco.codMunicipio === '2927408', 'endereço preenchido pelo CNPJ');
   await t.page.screenshot({ path: path.join(fotos, '4-cliente-celular.png') });
-  await preencher(t.page, 'E-mail para receber', 'fin@guardiao.com.br', j);
+  await preencher(t.page, 'E-mails para receber', 'fin@guardiao.com.br, rh@guardiao.com.br', j);
+  igual(listaDoEstado(await t.estado()), 'fin@guardiao.com.br, rh@guardiao.com.br', 'dois e-mails cadastrados no cliente');
   await j.getByRole('button', { name: 'Pronto' }).click();
-  e = await t.ate((x) => x.boletins.every((b) => b.email.status === 'enviado'), 'três notas emitidas e enviadas', 25000);
+  e = await t.ate((x) => x.boletins.every((b) => b.nota.status === 'emitida'), 'três notas emitidas', 25000);
+  await t.conferir(3, '4-conferencia-celular');
+  e = await t.ate((x) => x.boletins.every((b) => b.email.status === 'enviado'), 'três e-mails enviados', 15000);
   igual([amb.pref.emitidos.size, amb.emails.length], [3, 3], 'três notas e três e-mails');
+  igual(amb.emails[0].to.text, 'fin@guardiao.com.br, rh@guardiao.com.br', 'e-mail sai para os dois endereços');
   await t.page.waitForTimeout(500);
   for (const tela of ['inicio', 'caixa', 'clientes', 'historico', 'ajustes']) {
     await t.ir(tela);
@@ -422,7 +457,8 @@ cenario('6. Carga: 12 arquivos de formatos variados de uma vez, 1.500 vigilantes
   igual(e.boletins.reduce((a, b) => a + b.pessoas.filter((p) => !p.cpfValido).length, 0), 0, 'todos os CPFs reconhecidos');
   ok(ms < 20000, `tempo razoável (${ms} ms)`);
   await t.page.waitForTimeout(500);
-  igual((await arquivosDoZip(t.baixados.at(-1).caminho)).length, 12, 'zip com 12 boletins');
+  const z6 = await arquivosDoZip(t.baixados.at(-1).caminho);
+  igual([z6.filter((n) => n.endsWith('.pdf') && !n.includes('/')).length, z6.filter((n) => n.startsWith('EM PLANILHA/') && n.endsWith('.xlsx')).length], [12, 12], 'zip: 12 PDFs e 12 planilhas na pasta EM PLANILHA');
   igual(t.erros, [], 'sem erros no console');
   await t.ctx.close(); amb.fechar();
 });

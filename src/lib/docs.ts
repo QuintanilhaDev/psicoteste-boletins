@@ -2,9 +2,11 @@
 import { jsPDF } from 'jspdf';
 import autoTable from 'jspdf-autotable';
 import { Boletim, Cliente, Estado, clienteDe, discriminacao, porCliente, porMes, totais } from '../core/model';
-import { brl, competenciaLabel, fmtCNPJ, fmtCPF, fmtDate, digits } from '../core/text';
+import { brl, competenciaLabel, fmtCNPJ, fmtCPF, fmtDate, digits, listaEmails } from '../core/text';
 
-export interface Doc { nome: string; tipo: string; bytes: Uint8Array }
+export interface Doc { nome: string; tipo: string; bytes: Uint8Array; /** pasta dentro do .zip (ex.: "EM PLANILHA") */ pasta?: string }
+
+export const PASTA_PLANILHAS = 'EM PLANILHA';
 
 const TINTA: [number, number, number] = [18, 48, 46];
 const MARCA: [number, number, number] = [14, 107, 94];
@@ -36,7 +38,7 @@ function cabecalho(pdf: jsPDF, e: Estado, titulo: string, sub: string) {
   pdf.setFont('helvetica', 'normal').setFontSize(10);
   pdf.text(L(sub), 14, 21.5);
   pdf.setFontSize(9);
-  const dir = [p.razao, p.cnpj ? `CNPJ ${fmtCNPJ(p.cnpj)}` : '', [p.telefone, p.email].filter(Boolean).join('  ')].filter(Boolean);
+  const dir = [p.razao, p.cnpj ? `CNPJ ${fmtCNPJ(p.cnpj)}` : '', [p.telefone, listaEmails(p.email)[0]].filter(Boolean).join('  ')].filter(Boolean);
   dir.forEach((t, i) => pdf.text(L(t), 196, 11 + i * 5, { align: 'right' }));
   pdf.setTextColor(...TINTA);
 }
@@ -106,6 +108,137 @@ export function pdfBoletim(e: Estado, b: Boletim): Doc {
   return { nome: `Boletim-${num}-${nomeArquivo(c?.nome ?? 'cliente')}-${b.competencia}.pdf`, tipo: 'application/pdf', bytes: new Uint8Array(pdf.output('arraybuffer')) };
 }
 
+/** O boletim em planilha Excel: mesmo conteúdo do PDF, pronto para conferir, filtrar e somar. */
+export async function xlsxBoletim(e: Estado, b: Boletim): Promise<Doc> {
+  const ExcelJS = (await import('exceljs')).default;
+  const c = clienteDe(e, b);
+  const p = e.config.prestador;
+  const num = String(b.numero).padStart(4, '0');
+  const wb = new ExcelJS.Workbook();
+  wb.creator = p.razao || 'Psicotestes';
+  wb.created = new Date();
+  const ws = wb.addWorksheet(`Boletim ${num}`, {
+    views: [{ showGridLines: false }],
+    pageSetup: { paperSize: 9, orientation: 'portrait', fitToPage: true, fitToWidth: 1, fitToHeight: 0, margins: { left: 0.5, right: 0.5, top: 0.6, bottom: 0.6, header: 0.3, footer: 0.3 } },
+    headerFooter: { oddFooter: `Boletim ${num} - página &P de &N` },
+  });
+  ws.columns = [{ width: 13 }, { width: 44 }, { width: 19 }, { width: 16 }];
+  const TINTA_X = 'FF12302E';
+  const VERDE = 'FF0E6B5E';
+  const CLARO = 'FFEEF4F1';
+  const fonte = (extra: Partial<{ size: number; bold: boolean; color: string }> = {}) =>
+    ({ name: 'Calibri', size: extra.size ?? 11, bold: extra.bold ?? false, color: { argb: extra.color ?? TINTA_X } });
+  const faixa = (linha: number, valor: string, opt: { size?: number; bold?: boolean; fundo?: string; cor?: string; altura?: number } = {}) => {
+    ws.mergeCells(linha, 1, linha, 4);
+    const cel = ws.getCell(linha, 1);
+    cel.value = valor;
+    cel.font = fonte({ size: opt.size, bold: opt.bold, color: opt.cor });
+    if (opt.fundo) cel.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: opt.fundo } };
+    cel.alignment = { vertical: 'middle', indent: 1, wrapText: true };
+    if (opt.altura) ws.getRow(linha).height = opt.altura;
+  };
+  faixa(1, `Boletim de psicotestes nº ${num}`, { size: 16, bold: true, fundo: TINTA_X, cor: 'FFFFFFFF', altura: 32 });
+  faixa(2, `Competência: ${competenciaLabel(b.competencia, true)}`, { size: 11, fundo: TINTA_X, cor: 'FFC9DAD5', altura: 20 });
+  faixa(3, [p.razao, p.cnpj ? `CNPJ ${fmtCNPJ(p.cnpj)}` : '', listaEmailsTxt(p.email), p.telefone].filter(Boolean).join('   |   '), { size: 10, cor: 'FF5B6B68', altura: 20 });
+
+  const rotulo = (linha: number, r: string, v: string) => {
+    const a = ws.getCell(linha, 1);
+    a.value = r;
+    a.font = fonte({ size: 10, color: 'FF5B6B68' });
+    a.alignment = { vertical: 'middle', indent: 1 };
+    ws.mergeCells(linha, 2, linha, 4);
+    const x = ws.getCell(linha, 2);
+    x.value = v || '-';
+    x.font = fonte({ bold: true });
+    x.alignment = { vertical: 'middle', wrapText: true };
+    ws.getRow(linha).height = 20;
+  };
+  rotulo(5, 'Cliente', c?.nome ?? '');
+  rotulo(6, 'CNPJ', docCliente(c));
+  rotulo(7, 'Endereço', enderecoTxt(c));
+  rotulo(8, 'Nota fiscal', b.nota.status === 'emitida' && b.nota.numero ? `nº ${b.nota.numero}${b.nota.codigo ? ` (código ${b.nota.codigo})` : ''}` : 'ainda não emitida');
+
+  // quadro de totais com fórmula (quem abrir no Excel pode conferir)
+  const t = 10;
+  [['Vigilantes avaliados', 1], ['Valor por psicoteste', 2], ['Total do boletim', 3]].forEach(([r, i]) => {
+    const cel = ws.getCell(t, Number(i) + 1);
+    cel.value = String(r);
+    cel.font = fonte({ size: 10, color: 'FF5B6B68' });
+    cel.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: CLARO } };
+    cel.alignment = { horizontal: 'center' };
+  });
+  ws.getCell(t, 1).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: CLARO } };
+  const q = ws.getCell(t + 1, 2);
+  q.value = b.quantidade;
+  const pr = ws.getCell(t + 1, 3);
+  pr.value = b.precoUnit;
+  pr.numFmt = '"R$" #,##0.00';
+  const tot = ws.getCell(t + 1, 4);
+  tot.value = { formula: 'B11*C11', result: b.total };
+  tot.numFmt = '"R$" #,##0.00';
+  for (let col = 1; col <= 4; col++) {
+    const cel = ws.getCell(t + 1, col);
+    cel.font = fonte({ size: 14, bold: true });
+    cel.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: CLARO } };
+    cel.alignment = { horizontal: 'center', vertical: 'middle' };
+  }
+  ws.getRow(t + 1).height = 28;
+
+  let linha = t + 3;
+  if (b.pessoas.length) {
+    const cab = ws.getRow(linha);
+    ['Nº', 'Vigilante', 'CPF', 'Data'].forEach((v, i) => {
+      const cel = cab.getCell(i + 1);
+      cel.value = v;
+      cel.font = fonte({ bold: true, color: 'FFFFFFFF' });
+      cel.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: VERDE } };
+      cel.alignment = { vertical: 'middle', horizontal: i === 0 ? 'center' : 'left', indent: i === 0 ? 0 : 1 };
+    });
+    cab.height = 22;
+    const ini = linha + 1;
+    b.pessoas.forEach((pe, k) => {
+      const r = ws.getRow(ini + k);
+      const vals = [k + 1, pe.nome, pe.cpf ? fmtCPF(pe.cpf) : '-', pe.data ? fmtDate(pe.data) : ''];
+      vals.forEach((v, i) => {
+        const cel = r.getCell(i + 1);
+        cel.value = v;
+        cel.font = fonte();
+        cel.alignment = { vertical: 'middle', horizontal: i === 0 ? 'center' : 'left', indent: i === 0 ? 0 : 1 };
+        cel.border = { bottom: { style: 'hair', color: { argb: 'FFD5DEDA' } } };
+        if (k % 2 === 1) cel.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF6F9F7' } };
+      });
+      r.height = 19;
+    });
+    ws.autoFilter = { from: { row: linha, column: 1 }, to: { row: linha + b.pessoas.length, column: 4 } };
+    ws.views = [{ state: 'frozen', ySplit: linha, showGridLines: false }];
+    linha = ini + b.pessoas.length;
+    const fim = ws.getRow(linha);
+    fim.getCell(1).value = 'Total';
+    fim.getCell(2).value = { formula: `COUNTA(B${ini}:B${linha - 1})&" vigilantes"`, result: `${b.pessoas.length} vigilantes` };
+    for (let col = 1; col <= 4; col++) {
+      const cel = fim.getCell(col);
+      cel.font = fonte({ bold: true });
+      cel.border = { top: { style: 'medium', color: { argb: TINTA_X } } };
+      cel.alignment = { horizontal: col === 1 ? 'center' : 'left', indent: col === 1 ? 0 : 1 };
+    }
+    linha += 2;
+  } else {
+    faixa(linha, 'Quantidade informada em planilha-resumo, sem relação nominal.', { size: 10, cor: 'FF5B6B68' });
+    linha += 2;
+  }
+  for (const o of b.observacoes) { faixa(linha, `Obs.: ${o}`, { size: 10, cor: 'FF5B6B68', altura: 30 }); linha++; }
+  faixa(linha, `Emitido em ${fmtDate(b.criadoEm)}. Planilha de origem: ${b.arquivo}`, { size: 9, cor: 'FF8A9895' });
+
+  const buf = await wb.xlsx.writeBuffer();
+  return {
+    nome: `Boletim-${num}-${nomeArquivo(c?.nome ?? 'cliente')}-${b.competencia}.xlsx`,
+    tipo: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    bytes: new Uint8Array(buf as ArrayBuffer),
+    pasta: PASTA_PLANILHAS,
+  };
+}
+const listaEmailsTxt = (v: string) => listaEmails(v).join(', ');
+
 /** Espelho em PDF de uma NFS-e JÁ autorizada pela prefeitura (os dados vêm do retorno oficial). */
 export function pdfNota(e: Estado, b: Boletim): Doc | null {
   const n = b.nota;
@@ -127,7 +260,7 @@ export function pdfNota(e: Estado, b: Boletim): Doc | null {
     y += 2;
   };
   bloco('Prestador de serviços', [['Razão social', p.razao], ['CNPJ / Inscrição municipal', `${fmtCNPJ(p.cnpj)}  /  ${p.im}`]]);
-  bloco('Tomador de serviços', [['Razão social', c?.nome ?? ''], ['CNPJ', docCliente(c)], ['Endereço', enderecoTxt(c)], ['E-mail', c?.email ?? '']]);
+  bloco('Tomador de serviços', [['Razão social', c?.nome ?? ''], ['CNPJ', docCliente(c)], ['Endereço', enderecoTxt(c)], ['E-mail', listaEmails(c?.email).join(', ')]]);
   bloco('Discriminação dos serviços', [['', discriminacao(e, b)]]);
   const iss = Math.round(b.total * f.aliquota) / 100;
   pdf.setFillColor(238, 244, 241).roundedRect(14, y, 182, 20, 2, 2, 'F');
@@ -154,10 +287,45 @@ export function xmlNota(e: Estado, b: Boletim): Doc | null {
   return { nome: `NFSe-${b.nota.numero}-${nomeArquivo(clienteDe(e, b)?.nome ?? 'cliente')}.xml`, tipo: 'application/xml', bytes: new TextEncoder().encode(b.nota.xml) };
 }
 
+/** boletim em PDF + o mesmo em Excel (este vai na pasta EM PLANILHA do .zip) */
+export async function documentosDoBoletim(e: Estado, b: Boletim): Promise<Doc[]> {
+  return [pdfBoletim(e, b), await xlsxBoletim(e, b)];
+}
+/** tudo que vai anexado no e-mail ao cliente */
+export async function anexosDoEmail(e: Estado, b: Boletim): Promise<Doc[]> {
+  const docs = await documentosDoBoletim(e, b);
+  const pn = pdfNota(e, b);
+  const xn = xmlNota(e, b);
+  if (pn) docs.push(pn);
+  if (xn) docs.push(xn);
+  if (b.nota.anexo) {
+    const bin = atob(b.nota.anexo.base64);
+    const bytes = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    docs.push({ nome: b.nota.anexo.nome, tipo: b.nota.anexo.tipo, bytes });
+  }
+  return docs.map((d) => ({ ...d, pasta: undefined }));
+}
+
 export function paraBase64(bytes: Uint8Array): string {
   let s = '';
   for (let i = 0; i < bytes.length; i += 0x8000) s += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
   return btoa(s);
+}
+
+/** .zip com os documentos; os que têm `pasta` vão dentro dela (ex.: EM PLANILHA/Boletim-0001.xlsx) */
+export async function montarZip(docs: Doc[]): Promise<Blob> {
+  const JSZip = (await import('jszip')).default;
+  const zip = new JSZip();
+  const usados = new Set<string>();
+  for (const d of docs) {
+    const base = d.pasta ? `${d.pasta}/` : '';
+    let n = d.nome;
+    for (let i = 2; usados.has(base + n); i++) n = d.nome.replace(/(\.[a-z]+)$/i, `-${i}$1`);
+    usados.add(base + n);
+    zip.file(base + n, d.bytes);
+  }
+  return zip.generateAsync({ type: 'blob' });
 }
 
 /** Salva na pasta Downloads. Um arquivo vai direto; vários vão num único .zip (o navegador bloqueia rajadas de downloads). */
@@ -165,20 +333,11 @@ export async function baixar(docs: Doc[], nomeZip = 'psicotestes') {
   if (!docs.length) return;
   let blob: Blob;
   let nome: string;
-  if (docs.length === 1) {
+  if (docs.length === 1 && !docs[0].pasta) {
     blob = new Blob([docs[0].bytes as BlobPart], { type: docs[0].tipo });
     nome = docs[0].nome;
   } else {
-    const JSZip = (await import('jszip')).default;
-    const zip = new JSZip();
-    const usados = new Set<string>();
-    for (const d of docs) {
-      let n = d.nome;
-      for (let i = 2; usados.has(n); i++) n = d.nome.replace(/(\.[a-z]+)$/i, `-${i}$1`);
-      usados.add(n);
-      zip.file(n, d.bytes);
-    }
-    blob = await zip.generateAsync({ type: 'blob' });
+    blob = await montarZip(docs);
     nome = `${nomeZip}.zip`;
   }
   const url = URL.createObjectURL(blob);
@@ -298,7 +457,7 @@ export async function planilhaRelatorio(e: Estado): Promise<Doc> {
       { titulo: 'Psicotestes', larg: 13, fmt: '#,##0' }, { titulo: 'Valor unitário', larg: 15, fmt: moeda }, { titulo: 'Total', larg: 16, fmt: moeda },
       { titulo: 'Nota fiscal', larg: 22 }, { titulo: 'E-mail', larg: 14 }, { titulo: 'Pagamento', larg: 14 }, { titulo: 'Recebido em', larg: 14 }, { titulo: 'Planilha de origem', larg: 34 }],
     ordenados.map((b) => [String(b.numero).padStart(4, '0'), clienteDe(e, b)?.nome ?? '', docCliente(clienteDe(e, b)), competenciaLabel(b.competencia), b.quantidade, b.precoUnit, b.total,
-      situacaoNota(b), b.email.status === 'enviado' ? 'Enviado' : 'Não enviado', b.recebido ? 'Recebido' : 'Em aberto', fmtDate(b.recebidoEm), b.arquivo]), [4, 6]);
+      situacaoNota(b), b.email.status === 'enviado' ? 'Enviado' : b.email.status === 'dispensado' ? 'Não enviado (decisão)' : 'Não enviado', b.recebido ? 'Recebido' : 'Em aberto', fmtDate(b.recebidoEm), b.arquivo]), [4, 6]);
 
   montar('Vigilantes', 'Relação de vigilantes avaliados',
     [{ titulo: 'Cliente', larg: 38 }, { titulo: 'Mês', larg: 12 }, { titulo: 'Vigilante', larg: 40 }, { titulo: 'CPF', larg: 18 }, { titulo: 'Data', larg: 13 }, { titulo: 'Boletim', larg: 10, alinh: 'center' }],

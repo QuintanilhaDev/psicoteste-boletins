@@ -2,12 +2,12 @@
 import { abrirArquivo } from './core/arquivo';
 import { lerPlanilha } from './core/reader';
 import {
-  Boletim, Estado, clienteDe, discriminacao, enderecoCompleto, importarLeitura, pendencias, recalcular,
+  Boletim, Estado, clienteDe, discriminacao, enderecoCompleto, importarLeitura, pendencias, recalcular, verificacoes,
 } from './core/model';
-import { brl, competenciaLabel, digits, isCNPJ, isEmail } from './core/text';
+import { brl, competenciaLabel, digits, isCNPJ, juntarEmails, listaEmails } from './core/text';
 import { aplicarCnpj, buscarCnpj } from './lib/externo';
 import { api, ErroApi, ErroPrefeitura, NotaApi } from './lib/api';
-import { baixar, Doc, paraBase64, pdfBoletim, pdfNota, xmlNota } from './lib/docs';
+import { anexosDoEmail, baixar, Doc, documentosDoBoletim, PASTA_PLANILHAS, paraBase64, pdfNota, xmlNota } from './lib/docs';
 import {
   atualizarStatus, avisarUsuario, getEstado, getUi, gravado, mudar, recarregarSeMaisNovo, setUi,
 } from './store';
@@ -108,7 +108,7 @@ async function baixarPendentes() {
   const marcar: { id: string; boletim?: boolean; nota?: boolean }[] = [];
   for (const b of e.boletins) {
     const m: { id: string; boletim?: boolean; nota?: boolean } = { id: b.id };
-    if (!b.baixado.boletim && boletimPronto(e, b)) { docs.push(pdfBoletim(e, b)); m.boletim = true; }
+    if (!b.baixado.boletim && boletimPronto(e, b)) { docs.push(...(await documentosDoBoletim(e, b))); m.boletim = true; }
     if (!b.baixado.nota && b.nota.status === 'emitida' && b.nota.origem === 'automatica') {
       const pdf = pdfNota(e, b);
       const xml = xmlNota(e, b);
@@ -129,7 +129,8 @@ async function baixarPendentes() {
       if (m.nota) b.baixado.nota = true;
     }
   });
-  if (docs.length) avisarUsuario(docs.length === 1 ? `${docs[0].nome} salvo em Downloads.` : `${docs.length} documentos salvos em Downloads (arquivo .zip).`);
+  const planilhas = docs.filter((d) => d.pasta === PASTA_PLANILHAS).length;
+  if (docs.length) avisarUsuario(docs.length === 1 ? `${docs[0].nome} salvo em Downloads.` : `${docs.length} documentos salvos em Downloads (arquivo .zip${planilhas ? `, com a pasta ${PASTA_PLANILHAS}` : ''}).`);
 }
 
 async function emitirFila() {
@@ -240,7 +241,7 @@ async function emitirUm(id: string): Promise<'ok' | 'falhou' | 'parar'> {
     const final = nota;
     mudar((r) => {
       const x = achar(r, id)!;
-      x.nota = { ...x.nota, status: 'emitida', origem: 'automatica', numero: final.numero, codigo: final.codigo, emitidaEm: final.emitidaEm || new Date().toISOString(), xml: final.xml, ambiente: final.ambiente, erro: undefined };
+      x.nota = { ...x.nota, status: 'emitida', origem: 'automatica', valor: Number.isFinite(final.valor) ? final.valor : undefined, numero: final.numero, codigo: final.codigo, emitidaEm: final.emitidaEm || new Date().toISOString(), xml: final.xml, ambiente: final.ambiente, erro: undefined };
     });
     await gravado();
     return 'ok';
@@ -262,14 +263,14 @@ async function emitirUm(id: string): Promise<'ok' | 'falhou' | 'parar'> {
   }
 }
 
-function corpoEmail(e: Estado, b: Boletim) {
+export function corpoEmail(e: Estado, b: Boletim) {
   const c = clienteDe(e, b)!;
   const p = e.config.prestador;
   const mes = competenciaLabel(b.competencia, true).toLowerCase();
   const nota = b.nota.numero ? `nota fiscal nº ${b.nota.numero}` : 'nota fiscal';
   const linhas = [
     'Olá,',
-    `Segue o boletim de psicotestes de ${mes} e a ${nota}.`,
+    `Seguem o boletim de psicotestes de ${mes} (em PDF e em planilha Excel) e a ${nota}.`,
     `Vigilantes avaliados: ${b.quantidade}\nValor por psicoteste: ${brl(b.precoUnit)}\nTotal: ${brl(b.total)}`,
     b.nota.codigo ? `Código de verificação da nota: ${b.nota.codigo} (confira em nfse.salvador.ba.gov.br)` : '',
     'Qualquer dúvida, é só responder este e-mail.',
@@ -283,8 +284,24 @@ function corpoEmail(e: Estado, b: Boletim) {
   };
 }
 
+/** e-mail só sai depois que você confere e libera na tela de conferência */
 export const podeEnviar = (e: Estado, b: Boletim) =>
-  b.nota.status === 'emitida' && b.email.status === 'pendente' && b.email.tentativas < 3 && isEmail(clienteDe(e, b)?.email);
+  b.nota.status === 'emitida' && b.email.status === 'pendente' && !!b.email.aprovado && b.email.tentativas < 3 &&
+  listaEmails(clienteDe(e, b)?.email).length > 0 && !verificacoes(e, b).some((v) => v.tipo === 'erro');
+export const aguardandoConferencia = (b: Boletim) => b.nota.status === 'emitida' && b.email.status === 'pendente' && !b.email.aprovado;
+
+export function aprovarEnvios(ids: string[]) {
+  mudar((r) => {
+    for (const id of ids) {
+      const b = achar(r, id);
+      if (b && b.email.status === 'pendente') b.email = { ...b.email, aprovado: true, tentativas: 0, erro: undefined };
+    }
+  });
+  void rodar();
+}
+export function dispensarEnvio(id: string) {
+  mudar((r) => { const b = achar(r, id); if (b && b.email.status === 'pendente') b.email = { ...b.email, status: 'dispensado', aprovado: false }; });
+}
 
 async function enviarFila() {
   if (!getUi().status.email.pronto) return;
@@ -297,19 +314,13 @@ async function enviarFila() {
     if (!b || !podeEnviar(e, b)) continue;
     const c = clienteDe(e, b)!;
     setUi({ ocupado: `Enviando e-mail para ${c.nome}…` });
-    const docs: Doc[] = [pdfBoletim(e, b)];
-    const pn = pdfNota(e, b);
-    const xn = xmlNota(e, b);
-    if (pn) docs.push(pn);
-    if (xn) docs.push(xn);
-    const anexos = docs.map((d) => ({ nome: d.nome, tipo: d.tipo, base64: paraBase64(d.bytes) }));
-    if (b.nota.anexo) anexos.push(b.nota.anexo);
-    const para = c.email.trim();
+    const anexos = (await anexosDoEmail(e, b)).map((d) => ({ nome: d.nome, tipo: d.tipo, base64: paraBase64(d.bytes) }));
+    const para = juntarEmails(listaEmails(c.email));
     try {
       await api('email', { para, remetenteNome: e.config.prestador.razao, responderPara: e.config.prestador.email, ...corpoEmail(e, b), anexos });
       mudar((r) => {
         const x = achar(r, id)!;
-        x.email = { status: 'enviado', para, em: new Date().toISOString(), tentativas: x.email.tentativas + 1 };
+        x.email = { status: 'enviado', aprovado: false, para, em: new Date().toISOString(), tentativas: x.email.tentativas + 1 };
         if (x.nota.anexo) x.nota.anexo = undefined; // já foi entregue; não ocupa mais espaço
       });
       enviados++;
@@ -336,7 +347,8 @@ export function tentarDeNovo(id: string, o: 'nota' | 'email') {
     const b = achar(r, id);
     if (!b) return;
     if (o === 'nota' && b.nota.status !== 'emitida') { b.nota.status = 'pendente'; b.nota.tentativas = b.nota.rps != null ? 1 : 0; b.nota.erro = undefined; }
-    if (o === 'email') b.email = { status: 'pendente', tentativas: 0 };
+    // falhou: tenta de novo já liberado; reenvio de algo já enviado volta para a conferência
+    if (o === 'email') b.email = { status: 'pendente', tentativas: 0, aprovado: b.email.status === 'erro', em: b.email.em, para: b.email.para };
     recalcular(r);
   });
   setUi({ pausado: false });

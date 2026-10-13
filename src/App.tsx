@@ -1,6 +1,8 @@
 import { useEffect, useState } from 'react';
 import { processarArquivos } from './automation';
 import { BoletimJanela } from './BoletimJanela';
+import { Conferencia } from './Conferencia';
+import { aguardandoConferencia } from './automation';
 import { useEstado, useUi } from './store';
 import { Icone } from './ui';
 import { Ajustes } from './views/Ajustes';
@@ -27,6 +29,7 @@ export function App() {
   const [tela, setTela] = useState(telaDaUrl);
   const [boletim, setBoletim] = useState<string | null>(null);
   const [cliente, setCliente] = useState<string | null>(null);
+  const [conferindo, setConferindo] = useState(false);
   const [arrastando, setArrastando] = useState(false);
 
   const ir = (t: string) => { window.location.hash = `/${t}`; };
@@ -71,8 +74,9 @@ export function App() {
     };
   }, []);
 
-  const pend = listarPendencias(e).length;
-  const nav = { abrirBoletim: setBoletim, abrirCliente: setCliente, ir };
+  const pend = listarPendencias(e).length + e.boletins.filter(aguardandoConferencia).length;
+  const abrirConferencia = () => { setBoletim(null); setConferindo(true); };
+  const nav = { abrirBoletim: setBoletim, abrirCliente: setCliente, ir, abrirConferencia };
 
   return (
     <div className="app">
@@ -82,7 +86,7 @@ export function App() {
           <button key={t.id} className="nav-item" aria-current={tela === t.id ? 'page' : undefined} onClick={() => ir(t.id)}>
             <t.icone />
             <span>{t.nome}</span>
-            {t.id === 'inicio' && pend > 0 && <span className="bolha" aria-label={`${pend} pendências`}>{pend}</span>}
+            {t.id === 'inicio' && pend > 0 && <span className="bolha" aria-label={`${pend} coisas esperando você`}>{pend}</span>}
           </button>
         ))}
         <div className="rodape">{ui.status.nuvem.pronto ? (ui.nuvem === 'erro' ? 'Nuvem: falhou ao gravar' : 'Dados guardados na nuvem') : 'Dados guardados neste navegador'}</div>
@@ -95,7 +99,8 @@ export function App() {
           : tela === 'ajustes' ? <Ajustes e={e} ui={ui} />
           : <Inicio e={e} ui={ui} nav={nav} />}
       </main>
-      {boletim && <BoletimJanela e={e} ui={ui} id={boletim} fechar={() => setBoletim(null)} abrirCliente={setCliente} />}
+      {boletim && <BoletimJanela e={e} ui={ui} id={boletim} fechar={() => setBoletim(null)} abrirCliente={setCliente} abrirConferencia={abrirConferencia} />}
+      {conferindo && <Conferencia e={e} ui={ui} fechar={() => setConferindo(false)} />}
       {cliente && <ClienteJanela e={e} id={cliente} fechar={() => setCliente(null)} />}
       {arrastando && <div className="cortina">Pode soltar as planilhas</div>}
       {ui.aviso && <div className={`torrada ${ui.aviso.tipo === 'erro' ? 'erro' : ''}`} role="status">{ui.aviso.texto}</div>}

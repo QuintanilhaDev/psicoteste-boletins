@@ -5,7 +5,7 @@ import { alterar, rodar } from '../automation';
 import { salvarSenha, senhaSalva } from '../lib/api';
 import { baixar } from '../lib/docs';
 import { atualizarStatus, avisarUsuario, soMemoria, substituirEstado, Ui } from '../store';
-import { Campo } from '../ui';
+import { Campo, CampoEmails } from '../ui';
 
 export function Ajustes({ e, ui }: { e: Estado; ui: Ui }) {
   const cfg = e.config;
@@ -48,7 +48,7 @@ export function Ajustes({ e, ui }: { e: Estado; ui: Ui }) {
           <Campo classe="c8" rotulo="Razão social" valor={p.razao} aoMudar={(v) => mud((c) => { c.prestador.razao = v.trim(); })} />
           <Campo classe="c4" rotulo="CNPJ" valor={p.cnpj ? fmtCNPJ(p.cnpj) : ''} modo="numeric" aoMudar={(v) => mud((c) => { c.prestador.cnpj = digits(v); })} invalido={!!p.cnpj && !isCNPJ(p.cnpj)} />
           <Campo classe="c4" rotulo="Inscrição municipal" valor={p.im} aoMudar={(v) => mud((c) => { c.prestador.im = v.trim(); })} />
-          <Campo classe="c4" rotulo="E-mail" valor={p.email} tipo="email" modo="email" aoMudar={(v) => mud((c) => { c.prestador.email = v.trim(); })} dica="As respostas dos clientes chegam aqui." />
+          <CampoEmails classe="c8" rotulo="E-mails da clínica" valor={p.email} aoMudar={(v) => mud((c) => { c.prestador.email = v; })} dica="As respostas dos clientes chegam aqui. Pode pôr vários." />
           <Campo classe="c4" rotulo="Telefone" valor={p.telefone} modo="tel" aoMudar={(v) => mud((c) => { c.prestador.telefone = v.trim(); })} />
         </div>
       </section>

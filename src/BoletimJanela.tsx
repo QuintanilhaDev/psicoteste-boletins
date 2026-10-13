@@ -1,12 +1,12 @@
 import { useState } from 'react';
 import { clienteDe, Estado } from './core/model';
 import { brl, competenciaLabel, fmtCPF, fmtDate } from './core/text';
-import { alterar, boletimPronto, informarNotaManual, tentarDeNovo } from './automation';
-import { baixar, Doc, paraBase64, pdfBoletim, pdfNota, xmlNota } from './lib/docs';
+import { aguardandoConferencia, alterar, boletimPronto, informarNotaManual, tentarDeNovo } from './automation';
+import { baixar, Doc, documentosDoBoletim, paraBase64, pdfNota, xmlNota } from './lib/docs';
 import { avisarUsuario, Ui } from './store';
 import { Icone, Janela, situacaoDe, Trilha } from './ui';
 
-export function BoletimJanela({ e, ui, id, fechar, abrirCliente }: { e: Estado; ui: Ui; id: string; fechar: () => void; abrirCliente: (id: string) => void }) {
+export function BoletimJanela({ e, ui, id, fechar, abrirCliente, abrirConferencia }: { e: Estado; ui: Ui; id: string; fechar: () => void; abrirCliente: (id: string) => void; abrirConferencia: () => void }) {
   const b = e.boletins.find((x) => x.id === id);
   const [manual, setManual] = useState(false);
   const [numero, setNumero] = useState('');
@@ -60,10 +60,11 @@ export function BoletimJanela({ e, ui, id, fechar, abrirCliente }: { e: Estado; 
             {b.recebido ? 'Desfazer baixa' : <><Icone.certo /> Dar baixa: recebi</>}
           </button>
         )}
-        {boletimPronto(e, b) && <button className="btn" onClick={() => baixarDocs([pdfBoletim(e, b)])}><Icone.baixar /> Boletim</button>}
+        {boletimPronto(e, b) && <button className="btn" onClick={async () => baixarDocs(await documentosDoBoletim(e, b))}><Icone.baixar /> Boletim (PDF e Excel)</button>}
         {emitida && b.nota.origem === 'automatica' && <button className="btn" onClick={() => baixarDocs([pdfNota(e, b), xmlNota(e, b)])}><Icone.baixar /> Nota fiscal</button>}
         {b.nota.status === 'erro' && <button className="btn forte" onClick={() => tentarDeNovo(id, 'nota')}>Tentar a nota de novo</button>}
-        {emitida && b.email.status !== 'pendente' && <button className="btn calmo" onClick={() => tentarDeNovo(id, 'email')}>{b.email.status === 'erro' ? 'Tentar o e-mail de novo' : 'Reenviar e-mail'}</button>}
+        {aguardandoConferencia(b) && <button className="btn forte" onClick={abrirConferencia}>Conferir e enviar e-mail</button>}
+        {emitida && b.email.status !== 'pendente' && <button className="btn calmo" onClick={() => tentarDeNovo(id, 'email')}>{b.email.status === 'erro' ? 'Tentar o e-mail de novo' : b.email.status === 'dispensado' ? 'Enviar e-mail por aqui' : 'Reenviar e-mail'}</button>}
         {c && <button className="btn calmo" onClick={() => { fechar(); abrirCliente(c.id); }}>Cadastro do cliente</button>}
       </div>
 
